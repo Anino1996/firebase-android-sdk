@@ -8,85 +8,63 @@ import kotlinx.serialization.encoding.AbstractEncoder
 import kotlinx.serialization.encoding.CompositeEncoder
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.serializer
-import java.lang.Exception
 
-class FirestoreMapBetterEncoder() : AbstractEncoder() {
+class FirestoreMapBetterEncoder : AbstractEncoder() {
 
-    private var resultMap =  mutableMapOf<String, Any?>()
-    private val map = mutableMapOf<String, Any?>()
+    private var finalResultMap = mutableMapOf<String, Any?>() // singleton final result map
+    private val currentLevelMap = mutableMapOf<String, Any?>() // map of the current structure
     private var elementIndex: Int = 0
     private var descriptor: SerialDescriptor? = null
     private var isBeginOfEncoding: Boolean = true
-    private var elementName: MutableList<String> = mutableListOf()
+    private var elementNamePathList: MutableList<String> = mutableListOf()
 
     override val serializersModule: SerializersModule = FirestoreSerializersModule
 
     override fun encodeValue(value: Any) {
-        println("going to encode value $value")
         val key: String = descriptor?.getElementName(elementIndex++) as String
-        map.put(key, value)
-        println(map)
+        currentLevelMap.put(key, value)
     }
 
     override fun beginStructure(descriptor: SerialDescriptor): CompositeEncoder {
 
-        var key :String? = "dummy"
-        val currentElementNameList = this.elementName.toMutableList() // deep copy
-        val currentResultMap = this.resultMap // shallow copy
+        var key: String = "dummy"
+        val currentNamePath = this.elementNamePathList.toMutableList() // deep copy
         if (!isBeginOfEncoding) {
             key = this.descriptor?.getElementName(elementIndex++) as String
-            println("The key for the current strcture is ${key}")
         }
-        return FirestoreMapBetterEncoder().apply {
-            this.descriptor = descriptor
-            this.isBeginOfEncoding = false
-            this.resultMap = currentResultMap
-            if (key != null){
-                this.elementName = currentElementNameList.also{it.add(key)}
-            }
-
-
+        return FirestoreMapBetterEncoder().also {
+            it.finalResultMap = this.finalResultMap // shallow copy to keep it as singleton
+            it.descriptor = descriptor
+            it.isBeginOfEncoding = false
+            it.elementNamePathList = currentNamePath.also { it.add(key) }
         }
     }
 
     override fun endStructure(descriptor: SerialDescriptor) {
-        println(">".repeat(60))
-        println("This is the end of structure")
-        println("end structure map:" + map)
-        println("I want to save this to a place where + ${this.elementName}")
-
-        val key = this.elementName.removeLastOrNull()?:"NoValueKey"
-        val pathList = this.elementName
-
-        println("The path to save is $pathList, and the key is $key")
-        var workingMap = resultMap
-        for(path in pathList){
-            println(">>>>> $path")
-            println(">>>>>>>>>> result map is $resultMap")
-            try{
-                workingMap = workingMap.get(path) as MutableMap<String, Any?>
-                println(">>>>>>>>>>>> I got the map $workingMap")
-            }catch (e:Exception){
-                println(">> putting >>> $path")
-                workingMap.put(path, mutableMapOf<String, Any?>())
-                workingMap = workingMap.get(path) as MutableMap<String, Any?>
+        val key = this.elementNamePathList.removeLastOrNull()!!
+        val pathList = this.elementNamePathList
+        var currentWorkingMap = finalResultMap
+        // build the final result map along the path
+        for (path in pathList) {
+            try {
+                currentWorkingMap = currentWorkingMap.get(path) as MutableMap<String, Any?>
+            } catch (e: Exception) {
+                // if the path does not exist, create it along the path
+                currentWorkingMap.put(path, mutableMapOf<String, Any?>())
+                currentWorkingMap = currentWorkingMap.get(path) as MutableMap<String, Any?>
             }
         }
-
-        try{
-            val mapMap = workingMap.get(key) as MutableMap<String, Any?>
-            map.forEach{entry ->
-                mapMap.put(entry.key, entry.value)
-            }
-        }catch(e: Exception){
-            workingMap.put(key, map)
+        // put the endStructure map into the global final map
+        try {
+            val mapMap = currentWorkingMap.get(key) as MutableMap<String, Any?>
+            currentLevelMap.forEach { entry -> mapMap.put(entry.key, entry.value) }
+        } catch (e: Exception) {
+            currentWorkingMap.put(key, currentLevelMap)
         }
-
-        println("the final result map is ${resultMap}")
     }
 
     fun serializedResult(): Map<String, Any?> {
-        return resultMap["dummy"] as MutableMap<String, Any?>
+        return finalResultMap["dummy"] as MutableMap<String, Any?>
     }
 }
 
@@ -99,15 +77,24 @@ fun <T> encodeToBetterMap(serializer: SerializationStrategy<T>, value: T): Map<S
 inline fun <reified T> encodeToBetterMap(value: T): Map<String, Any?> =
     encodeToBetterMap(serializer(), value)
 
-@Serializable data class HomeAddress(val strName: String?="foo-bar")
+@Serializable data class HomeAddress(val strName: String? = "foo-bar")
 
 @Serializable data class Student(val name: String, val id: Int, val address: HomeAddress)
 
-@Serializable data class ClassRoom(val num: Int, val student1: Student, val student2: Student, val totalNum: Int)
+@Serializable
+data class ClassRoom(val num: Int, val student1: Student, val student2: Student, val totalNum: Int)
 
-val classRoom = ClassRoom(1, Student("chris", 52, HomeAddress("Leseter")), Student("mayson", 53, HomeAddress()),56)
+val classRoom =
+    ClassRoom(
+        1,
+        Student("chris", 52, HomeAddress("Lester")),
+        Student("mayson", 53, HomeAddress()),
+        56
+    )
 
 fun main() {
     val encodeMap = encodeToBetterMap(classRoom)
     println(encodeMap)
+    // This is the result:
+    // {student1={address={strName=Lester}, name=chris, id=52}, student2={address={strName=foo-bar}, name=mayson, id=53}, num=1, totalNum=56}
 }
